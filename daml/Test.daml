@@ -1,0 +1,265 @@
+module Test where
+
+import DA.Date
+import Daml.Script
+import DA.Time
+
+import Main
+import Setup
+
+sampleAppInfo: SSCApplicationInfo
+sampleAppInfo = SSCApplicationInfo with
+  name = "Alice"
+  studentId = "0000"
+  phone = Some "(717) 550-1675"
+  duration = DateRange with
+    from = date 2024 Feb 19
+    to = date 2024 Dec 31
+  sportType = Gym
+
+---------------------------------------
+-------- Unhappy paths testing --------
+---------------------------------------
+
+-- | Fails to create @SSCAccount@ when student id consists not of exactly 4 characters.
+testCreateAccountWithInvalidStudentId: Script ()
+testCreateAccountWithInvalidStudentId = script do
+  SSCTestData{..} <- setupTestData
+
+  aliceAppCid <- submit student do
+    exerciseCmd blankAppCid SubmitApplication with
+      student
+      university
+      applicationInfo = sampleAppInfo { studentId = "000" } -- student id must have 4 characters
+
+  submitMustFail university do
+    exerciseCmd aliceAppCid ReviewApplication
+
+-- | Fails to create @SSCAccount@ when acconut duration isn't valid date interval.
+testCreateAccountWithInvalidDuration: Script ()
+testCreateAccountWithInvalidDuration = script do
+  SSCTestData{..} <- setupTestData
+
+  aliceAppCid <- submit student do
+    exerciseCmd blankAppCid SubmitApplication with
+      student
+      university
+      applicationInfo = sampleAppInfo
+        { duration = DateRange with
+            from = date 2024 Feb 19
+            to = date 2024 Feb 18 -- 'to <= from', so date interval is invalid
+        }
+  
+  submitMustFail university do
+    exerciseCmd aliceAppCid ReviewApplication
+
+-- | Fails to create multiple accounts with the same student id.
+testCreateMultipleAccounts: Script ()
+testCreateMultipleAccounts = script do
+  SSCTestData{..} <- setupTestData
+
+  aliceAppCid <- submit student do
+    exerciseCmd blankAppCid SubmitApplication with
+      student
+      university
+      applicationInfo = sampleAppInfo
+
+  -- Successfully created first account for Alice
+  submit university do
+    exerciseCmd aliceAppCid ReviewApplication
+
+  blankAppCid2 <- submit student do
+    exerciseCmd universityServiceCid CreateBlankApplication
+  
+  aliceAppCid2 <- submit student do
+    exerciseCmd blankAppCid2 SubmitApplication with
+      student
+      university
+      applicationInfo = sampleAppInfo
+  
+  -- Fails to create 2nd acconut for Alice because id is not unique
+  submitMustFail university do
+    exerciseCmd aliceAppCid2 ReviewApplication
+
+-- | Fails to change the sport type to the same one
+testChangeSportTypeToTheSameOne: Script ()
+testChangeSportTypeToTheSameOne = script do
+  SSCTestData{..} <- setupTestData
+
+  aliceAppCid <- submit student do
+    exerciseCmd blankAppCid SubmitApplication with
+      student
+      university
+      applicationInfo = sampleAppInfo
+    
+  aliceAccountCid <- submit university do
+    exerciseCmd aliceAppCid ReviewApplication
+  
+  -- Alice's account already has 'sportType = Gym', so exercising
+  -- this choice will fail
+  submitMustFail student do
+    exerciseCmd aliceAccountCid ChangeSportType with
+      newSportType = Gym
+
+-- | Fails to change the sport type on expired account
+testChangeSportTypeOnExpiredAccount: Script ()
+testChangeSportTypeOnExpiredAccount = script do
+  SSCTestData{..} <- setupTestData
+
+  aliceAppCid <- submit student do
+    exerciseCmd blankAppCid SubmitApplication with
+      student
+      university
+      applicationInfo = sampleAppInfo
+    
+  aliceAccountCid <- submit university do
+    exerciseCmd aliceAppCid ReviewApplication
+  
+  setTime $ time (date 2025 Jan 01) 00 00 00
+
+  -- Alice's account has been expired, so exercising this
+  -- choice will fail
+  submitMustFail student do
+    exerciseCmd aliceAccountCid ChangeSportType with
+      newSportType = SwimmingPool
+
+-- | Fails to renew account which is still valid
+testRenewValidAccount: Script ()
+testRenewValidAccount = script do
+  SSCTestData{..} <- setupTestData
+
+  aliceAppCid <- submit student do
+    exerciseCmd blankAppCid SubmitApplication with
+      student
+      university
+      applicationInfo = sampleAppInfo
+    
+  aliceAccountCid <- submit university do
+    exerciseCmd aliceAppCid ReviewApplication
+
+  setTime $ time (date 2024 Feb 28) 00 00 00
+
+  -- Alice's account is valid till 31 Dec 2024, so she can't renew it now 
+  submitMustFail student do
+    exerciseCmd aliceAccountCid $ RenewAccount with
+      to = date 2025 Jan 01
+
+-- | Fails to renew account with the date in the past.
+testRenewAccountToDateInThePast: Script ()
+testRenewAccountToDateInThePast = script do
+  SSCTestData{..} <- setupTestData
+
+  aliceAppCid <- submit student do
+    exerciseCmd blankAppCid SubmitApplication with
+      student
+      university
+      applicationInfo = sampleAppInfo
+    
+  aliceAccountCid <- submit university do
+    exerciseCmd aliceAppCid ReviewApplication
+
+  setTime $ time (date 2025 Jan 05) 00 00 00
+
+  -- Renew account to the date in the past is prohibited, so exercising
+  -- this choice should fail
+  submitMustFail student do
+    exerciseCmd aliceAccountCid $ RenewAccount with
+      to = date 2025 Jan 01
+
+---------------------------------------
+--------- Happy paths testing ---------
+---------------------------------------
+
+-- | Account creates successfully
+testCreateAccount: Script ()
+testCreateAccount = script do
+  SSCTestData{..} <- setupTestData
+
+  aliceAppCid <- submit student do
+    exerciseCmd blankAppCid SubmitApplication with
+      student
+      university
+      applicationInfo = sampleAppInfo
+    
+  submit university do
+    exerciseCmd aliceAppCid ReviewApplication
+
+  return ()
+
+-- | Alice is able to renew accout when it becomes expired
+testCanRenewAccountWhenExpired: Script ()
+testCanRenewAccountWhenExpired = script do
+  SSCTestData{..} <- setupTestData
+
+  aliceAppCid <- submit student do
+    exerciseCmd blankAppCid SubmitApplication with
+      student
+      university
+      applicationInfo = sampleAppInfo
+    
+  aliceAccountCid <- submit university do
+    exerciseCmd aliceAppCid ReviewApplication
+  
+  setTime $ time (date 2025 Jan 01) 00 00 00
+
+  submit student do
+    exerciseCmd aliceAccountCid RenewAccount with
+      to = date 2025 Dec 31
+  
+  return ()
+  
+
+-- | Alice is able to change her account's sport type to @TennisCourt@
+-- if her account is valid now.
+testCanChangeSportTypeOnValidAccount: Script ()
+testCanChangeSportTypeOnValidAccount = script do
+  SSCTestData{..} <- setupTestData
+
+  aliceAppCid <- submit student do
+    exerciseCmd blankAppCid SubmitApplication with
+      student
+      university
+      applicationInfo = sampleAppInfo
+    
+  aliceAccountCid <- submit university do
+    exerciseCmd aliceAppCid ReviewApplication
+  
+  setTime $ time (date 2024 Mar 01) 00 00 00
+
+  submit student do
+    exerciseCmd aliceAccountCid ChangeSportType with
+      newSportType = TennisCourt
+  
+  return ()
+
+-- | Full scenario test:
+-- 1. Alice creates account which is valid till 31 Dec 2024 with 'sportType = Gym'
+-- 2. Alice changes sport type to 'SwimmingPool' when her account is still valid
+-- 3. Alice's account becomes expired
+-- 4. Alice renews her account to 31 Dec 2025.
+testFullScenario: Script ()
+testFullScenario = script do
+  SSCTestData{..} <- setupTestData
+
+  aliceAppCid <- submit student do
+    exerciseCmd blankAppCid SubmitApplication with
+      student
+      university
+      applicationInfo = sampleAppInfo
+    
+  aliceAccountCid <- submit university do
+    exerciseCmd aliceAppCid ReviewApplication
+  
+  setTime $ time (date 2024 Mar 01) 00 00 00
+
+  aliceAccountCid <- submit student do
+    exerciseCmd aliceAccountCid ChangeSportType with
+      newSportType = SwimmingPool
+  
+  setTime $ time (date 2025 Jan 01) 00 00 00
+
+  submit student do
+    exerciseCmd aliceAccountCid RenewAccount with
+      to = date 2025 Dec 31
+
+  return ()

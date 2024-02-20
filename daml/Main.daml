@@ -1,0 +1,139 @@
+module Main where
+
+import DA.Date
+import DA.Optional
+import DA.Text as T
+
+data DateRange = DateRange
+  with
+    from: Date
+    to: Date
+  deriving (Eq, Show)
+
+data SportServiceType
+  = SwimmingPool
+  | Gym
+  | TennisCourt
+  deriving (Eq, Show)
+
+data SSCApplicationInfo = SSCApplicationInfo
+  with
+    name: Text -- ^ Name of student
+    studentId: Text -- ^ Unique ID of student that consists of 4 characters
+    phone: Optional Text -- ^ Student's phone number (optional)
+    duration: DateRange -- ^ Duration of subscription to student sport club
+    sportType: SportServiceType -- ^ The type of sport service provided by student sport club
+  deriving (Eq, Show)
+
+template SSCApplication
+  with
+    student: Party
+    university: Party
+    applicationInfo: SSCApplicationInfo
+  where
+    signatory student
+    observer university
+
+    choice SubmitApplication: ContractId SSCApplication
+      with
+        student: Party
+        university: Party
+        applicationInfo: SSCApplicationInfo
+      controller student
+      do
+        trace "Submitting the application" $ create this with
+          student
+          university
+          applicationInfo
+
+    choice ReviewApplication: ContractId SSCAccount
+      with
+      controller university
+      do
+        assertMsg "Assertion failure: 'duration' should be valid interval" $
+          applicationInfo.duration.from < applicationInfo.duration.to
+        mbAccount <- lookupByKey @SSCAccount (university, applicationInfo.studentId)
+        if isSome mbAccount
+        then abort "Assertion failure: Duplicate student id"
+        else trace "Creating SSC account" $ create SSCAccount with
+          student
+          university
+          studentName = applicationInfo.name
+          studentId = applicationInfo.studentId
+          duration = applicationInfo.duration
+          sportType = applicationInfo.sportType
+
+template SSCAccount
+  with
+    student: Party
+    university: Party
+    studentName: Text
+    studentId: Text
+    duration: DateRange
+    sportType: SportServiceType
+  where
+    signatory student, university
+    key (university, studentId): (Party, Text)
+    maintainer key._1
+
+    ensure T.length studentId == 4
+
+    choice ChangeSportType: ContractId SSCAccount
+      with
+        newSportType: SportServiceType
+      controller student
+      do
+        nowDate <- fmap toDateUTC getTime
+
+        assertMsg "Assertion failure: couldn't change sport type on account which is not active yet" $
+          nowDate >= duration.from
+
+        assertMsg "Assertion failure: couldn't change sport type on expired account" $
+          nowDate <= duration.to
+
+        assertMsg "Assertion failure: 'newSportType' is equal to the current sport type" $
+          newSportType /= sportType
+
+        trace ("Changing sport type to " <> show newSportType) $ create this with
+          sportType = newSportType
+
+    choice RenewAccount: ContractId SSCAccount
+      with
+        to: Date
+      controller student
+      do
+        nowDate <- fmap toDateUTC getTime
+
+        assertMsg "Assertion failure: couldn't renew account which is still valid" $
+          nowDate > duration.to
+
+        assertMsg "Assertion failure: new account expiration date has already passed" $
+          nowDate < to
+
+        trace ("Renewing account to " <> show to) $ create this with
+          duration = DateRange with
+            from = nowDate
+            to
+
+template UniversityService
+  with
+    student: Party
+    university: Party
+  where
+    signatory university
+    observer student
+
+    nonconsuming choice CreateBlankApplication: ContractId SSCApplication
+      controller student
+      do
+        let d = date 1970 Jan 1
+            dr = DateRange with from = d; to = d
+        create SSCApplication with
+          student
+          university
+          applicationInfo = SSCApplicationInfo with
+            name = ""
+            studentId = ""
+            phone = None
+            duration = dr
+            sportType = Gym

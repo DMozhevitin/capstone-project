@@ -1,0 +1,40 @@
+module Setup where
+
+import Daml.Script
+
+import Main
+
+data SSCTestData = SSCTestData with
+  student: Party
+  university: Party
+  universityServiceCid: ContractId UniversityService
+  blankAppCid: ContractId SSCApplication
+
+setupTestData: Script SSCTestData
+setupTestData = script do
+  student <- allocatePartyWithHint "Student" (PartyIdHint "STU")
+  university <- allocatePartyWithHint "University" (PartyIdHint "UNI")
+
+  universityServiceCid <- submit university do
+    createCmd UniversityService with
+      student
+      university
+
+  blankAppCid <- submit student do
+    exerciseCmd universityServiceCid CreateBlankApplication
+
+  return $ SSCTestData with
+    student
+    university
+    universityServiceCid
+    blankAppCid
+
+setupUsers: Script ()
+setupUsers = script do
+  SSCTestData{..} <- setupTestData
+
+  aliceId <- validateUserId "Alice"
+  mitId <- validateUserId "MIT"
+
+  createUser (User aliceId (Some student)) [CanActAs student]
+  createUser (User mitId (Some university)) [CanActAs university]
